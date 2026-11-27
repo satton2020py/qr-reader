@@ -64,3 +64,5 @@ html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
 .zoom[hidden] { display:none; }
 .zoom-label { min-width:40px; font-size:14px; font-weight:700; font-variant-numeric:tabular-nums; }
 .zoom input { flex:1; accent-color:var(--accent); height:28px; }
+.policy { text-align:center; margin:24px 0 8px; font-size:13px; }
+.policy a { color:var(--muted); }

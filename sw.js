@@ -1,6 +1,6 @@
 // オフラインでも開けるようにファイルをキャッシュする
-const CACHE = 'qr-reader-v5';
-const FILES = ['./', 'index.html', 'style.css', 'app.js', 'jsQR.js', 'manifest.json', 'icon.svg'];
+const CACHE = 'qr-reader-v7';
+const FILES = ['./', 'index.html', 'style.css', 'app.js', 'jsQR.js', 'manifest.json', 'icon.svg', 'privacy.html', 'icons/icon-192.png', 'icons/icon-512.png'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES))); self.skipWaiting(); });
 self.addEventListener('activate', (e) => {
   e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k)))));
