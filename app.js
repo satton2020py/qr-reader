@@ -1,5 +1,5 @@
 'use strict';
-// QRリーダー ステップ1：起動即スキャン・自動判別・画像からの読み取り
+// QRリーダー：起動即スキャン・自動判別・画像からの読み取り・履歴とCSV出力
 
 const $ = (id) => document.getElementById(id);
 const video = $('video'), canvas = $('canvas'), ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -24,7 +24,8 @@ function jsqrRegion(src, sx, sy, sw, sh, maxSide, inversion = 'attemptBoth') {
   canvas.width = Math.max(1, Math.round(sw * scale)); canvas.height = Math.max(1, Math.round(sh * scale));
   ctx.drawImage(src, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
   const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const code = jsQR(img.data, img.width, img.height, { inversionAttempts: inversion });
+  let code = null;
+  try { code = jsQR(img.data, img.width, img.height, { inversionAttempts: inversion }); } catch (e) { /* jsQRが稀に例外を出すので無視 */ }
   return code ? code.data : null;
 }
 
@@ -111,8 +112,9 @@ function stopCamera() {
 async function loop() {
   if (!scanning) return;
   if (video.readyState >= 2) {
-    const text = await decodeSource(video, video.videoWidth, video.videoHeight, true);
-    if (text && scanning) { if (navigator.vibrate) navigator.vibrate(60); stopCamera(); showResult(text); return; }
+    let text = null;
+    try { text = await decodeSource(video, video.videoWidth, video.videoHeight, true); } catch (e) { /* 次のフレームで再挑戦 */ }
+    if (text && scanning) { if (navigator.vibrate) navigator.vibrate(60); stopCamera(); addHistory(text); showResult(text); return; }
   }
   // 内蔵解析なら毎フレーム、jsQRなら少し間を空けて画面の動きを保つ
   if (detector) requestAnimationFrame(loop); else setTimeout(() => requestAnimationFrame(loop), 30);
@@ -125,7 +127,7 @@ $('file').addEventListener('change', async (e) => {
   try {
     const bmp = await createImageBitmap(file);
     const text = await decodeSource(bmp, bmp.width, bmp.height);
-    if (text) { stopCamera(); showResult(text); }
+    if (text) { stopCamera(); addHistory(text); showResult(text); }
     else toast('この画像からQRコードが見つかりませんでした');
   } catch (err) { toast('画像を読み込めませんでした'); }
 });
@@ -159,7 +161,21 @@ function classify(text) {
 // ---------- 結果の表示 ----------
 const LABELS = { url: 'URL', wifi: 'Wi-Fi', tel: '電話番号', mail: 'メール', sms: 'SMS', geo: '地図', contact: '連絡先', text: 'テキスト' };
 
-function showResult(raw) {
+// 一覧などで使う短い見出し
+function summary(r, raw) {
+  switch (r.kind) {
+    case 'url': return r.url;
+    case 'wifi': return r.ssid || '(名前なし)';
+    case 'tel': case 'sms': return r.number;
+    case 'mail': return r.to;
+    default: return (r.text || raw).split('\n')[0];
+  }
+}
+
+let resultFromHistory = null; // 履歴から開いたときはその項目のid
+
+function showResult(raw, historyId = null) {
+  resultFromHistory = historyId;
   const r = classify(raw);
   $('kind').textContent = LABELS[r.kind];
   const fields = $('fields'), actions = $('actions');
@@ -200,6 +216,13 @@ function showResult(raw) {
       action('コピー', () => copy(r.text), true);
       action('Googleで検索', () => window.open('https://www.google.com/search?q=' + encodeURIComponent(r.text), '_blank', 'noopener'));
   }
+  if (historyId) {
+    const del = action('履歴から削除', () => { removeHistory(historyId); closeSheet(); toast('削除しました'); });
+    del.classList.add('danger');
+    $('close').textContent = '履歴に戻る';
+  } else {
+    $('close').textContent = '続けてスキャン';
+  }
   $('sheet').hidden = false;
 }
 
@@ -216,16 +239,90 @@ let toastTimer;
 function toast(msg) { const el = $('toast'); el.textContent = msg; el.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, 2000); }
 function setStatus(s) { $('status').textContent = s; }
 
-$('close').onclick = () => { $('sheet').hidden = true; startCamera(); };
+// ---------- 履歴 ----------
+const HKEY = 'qr-history-v1', HMAX = 500;
+function loadHistory() { try { return JSON.parse(localStorage.getItem(HKEY)) || []; } catch (e) { return []; } }
+function saveHistory(list) { try { localStorage.setItem(HKEY, JSON.stringify(list.slice(0, HMAX))); } catch (e) { toast('履歴を保存できませんでした'); } }
+function addHistory(text) {
+  // 同じ内容はいちばん上に移して日時を更新する
+  const list = loadHistory().filter((h) => h.text !== text);
+  list.unshift({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text, at: new Date().toISOString() });
+  saveHistory(list);
+}
+function removeHistory(id) { saveHistory(loadHistory().filter((h) => h.id !== id)); }
+
+function fmtDate(iso) {
+  const d = new Date(iso), p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function renderHistory() {
+  const list = loadHistory(), ul = $('historyList');
+  ul.innerHTML = '';
+  $('historyEmpty').hidden = list.length > 0;
+  $('exportCsv').disabled = $('clearHistory').disabled = list.length === 0;
+  resetClear();
+  for (const h of list) {
+    const r = classify(h.text);
+    const li = document.createElement('li'), b = document.createElement('button');
+    const meta = document.createElement('div'); meta.className = 'h-meta';
+    const k = document.createElement('span'); k.className = 'h-kind'; k.textContent = LABELS[r.kind];
+    const t = document.createElement('span'); t.textContent = fmtDate(h.at);
+    meta.append(k, t);
+    const title = document.createElement('div'); title.className = 'h-title'; title.textContent = summary(r, h.text);
+    b.append(meta, title);
+    b.onclick = () => showResult(h.text, h.id);
+    li.append(b); ul.append(li);
+  }
+}
+
+function openHistory() { stopCamera(); $('sheet').hidden = true; renderHistory(); $('history').hidden = false; }
+function closeHistory() { $('history').hidden = true; startCamera(); }
+
+function csvCell(v) { return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+function exportCsv() {
+  const list = loadHistory();
+  if (!list.length) return;
+  const rows = [['日時', '種類', '見出し', '内容']];
+  for (const h of list) { const r = classify(h.text); rows.push([fmtDate(h.at), LABELS[r.kind], summary(r, h.text), h.text]); }
+  const csv = '\ufeff' + rows.map((row) => row.map(csvCell).join(',')).join('\r\n'); // 先頭のBOMでExcelでも文字化けしない
+  const d = new Date(), p = (n) => String(n).padStart(2, '0');
+  const name = `qr-history-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.csv`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = name; document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  toast('CSVを保存しました');
+}
+
+// 全削除は2回押しで確定（誤操作防止）
+let clearArmed = null;
+function resetClear() { clearTimeout(clearArmed); clearArmed = null; const b = $('clearHistory'); b.textContent = 'すべて削除'; b.classList.remove('danger'); }
+$('clearHistory').onclick = () => {
+  const b = $('clearHistory');
+  if (!clearArmed) { b.textContent = 'もう一度押すと削除'; b.classList.add('danger'); clearArmed = setTimeout(resetClear, 3000); return; }
+  saveHistory([]); renderHistory(); toast('履歴をすべて削除しました');
+};
+
+$('openHistory').onclick = openHistory;
+$('closeHistory').onclick = closeHistory;
+$('exportCsv').onclick = exportCsv;
+
+function closeSheet() {
+  $('sheet').hidden = true;
+  if (resultFromHistory) { resultFromHistory = null; renderHistory(); }
+  else startCamera();
+}
+$('close').onclick = closeSheet;
 $('retry').onclick = startCamera;
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) stopCamera();
-  else if ($('sheet').hidden && !stream) startCamera();
+  else if ($('sheet').hidden && $('history').hidden && !stream) startCamera();
 });
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
 // テスト用に公開
-window.__qr = { classify, showResult };
+window.__qr = { classify, showResult, loadHistory };
 
 startCamera();
