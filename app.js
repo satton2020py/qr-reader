@@ -1,5 +1,5 @@
 'use strict';
-// QRリーダー：起動即スキャン・自動判別・画像からの読み取り・履歴とCSV出力
+// QRリーダー：起動即スキャン・自動判別・画像からの読み取り・履歴とCSV出力・ライトとズーム
 
 const $ = (id) => document.getElementById(id);
 const video = $('video'), canvas = $('canvas'), ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -46,7 +46,7 @@ async function decodeSource(src, w, h, isVideo) {
   if (isVideo) {
     // jsQR：枠のあたり（中央の正方形）を小さめに解析して軽くする。白黒反転は時々だけ試す
     frameNo++;
-    const side = Math.min(w, h) * 0.75;
+    const side = Math.min(w, h) * 0.75 / digitalZoom;
     return jsqrRegion(src, (w - side) / 2, (h - side) / 2, side, side, 480, frameNo % 6 ? 'dontInvert' : 'onlyInvert');
   }
   // 画像：全体 → 小さく縮めて再挑戦（高解像度スクショ対策）
@@ -91,6 +91,7 @@ async function startCamera() {
     } catch (e) {}
     video.srcObject = stream;
     await video.play();
+    setupControls(track);
     await detectorReady;
     setStatus('QRコードを枠に合わせてください');
     scanning = true;
@@ -103,8 +104,82 @@ async function startCamera() {
   }
 }
 
+// ---------- ライトとズーム ----------
+let camTrack = null, torchOn = false, hwZoom = null, digitalZoom = 1;
+
+function setupControls(track) {
+  camTrack = track; torchOn = false; digitalZoom = 1; video.style.transform = '';
+  const caps = track.getCapabilities ? track.getCapabilities() : {};
+  // ライト：カメラが対応しているときだけボタンを出す
+  const torchBtn = $('torch');
+  torchBtn.hidden = !caps.torch;
+  torchBtn.setAttribute('aria-pressed', 'false');
+  // ズーム：カメラのズームが使えればそれを、なければ映像を拡大する（デジタルズーム）
+  const z = $('zoom');
+  if (caps.zoom && caps.zoom.max > caps.zoom.min) {
+    hwZoom = caps.zoom;
+    z.min = caps.zoom.min; z.max = Math.min(caps.zoom.max, caps.zoom.min * 8); z.step = caps.zoom.step || 0.1;
+    z.value = (track.getSettings && track.getSettings().zoom) || caps.zoom.min;
+  } else {
+    hwZoom = null; z.min = 1; z.max = 4; z.step = 0.1; z.value = 1;
+  }
+  $('zoomBox').hidden = false;
+  showZoomLabel();
+}
+
+function showZoomLabel() {
+  const z = $('zoom'), base = Number(z.min) || 1;
+  $('zoomLabel').textContent = (Number(z.value) / base).toFixed(1) + 'x';
+}
+
+let zoomWanted = null, zoomBusy = false;
+async function applyZoom(value) {
+  const z = $('zoom');
+  z.value = value; showZoomLabel();
+  if (hwZoom && camTrack) {
+    // スライダーを動かしている間に連打しないよう、最新の値だけを順に反映する
+    zoomWanted = Number(z.value);
+    if (zoomBusy) return;
+    zoomBusy = true;
+    try {
+      let v;
+      do { v = zoomWanted; await camTrack.applyConstraints({ advanced: [{ zoom: v }] }); } while (camTrack && zoomWanted !== v);
+    } catch (e) { /* 対応していない値は無視 */ }
+    zoomBusy = false;
+  } else {
+    digitalZoom = Number(z.value);
+    video.style.transform = digitalZoom > 1 ? `scale(${digitalZoom})` : '';
+  }
+}
+
+$('zoom').addEventListener('input', (e) => applyZoom(e.target.value));
+
+// 画面をダブルタップで 1x ⇔ 2x を切り替え
+let lastTap = 0;
+$('scanner').addEventListener('pointerup', (e) => {
+  if (e.target.closest('button, label, input, .zoom')) return;
+  const now = Date.now();
+  if (now - lastTap < 300) {
+    const z = $('zoom'), base = Number(z.min) || 1;
+    const target = Number(z.value) / base > 1.4 ? base : Math.min(base * 2, Number(z.max));
+    applyZoom(target);
+    lastTap = 0;
+  } else lastTap = now;
+});
+
+$('torch').onclick = async () => {
+  if (!camTrack) return;
+  try {
+    await camTrack.applyConstraints({ advanced: [{ torch: !torchOn }] });
+    torchOn = !torchOn;
+    $('torch').setAttribute('aria-pressed', String(torchOn));
+  } catch (e) { toast('ライトを点けられませんでした'); }
+};
+
 function stopCamera() {
   scanning = false;
+  camTrack = null; torchOn = false;
+  $('torch').setAttribute('aria-pressed', 'false');
   if (stream) stream.getTracks().forEach((t) => t.stop());
   stream = null;
 }
@@ -323,6 +398,6 @@ document.addEventListener('visibilitychange', () => {
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
 // テスト用に公開
-window.__qr = { classify, showResult, loadHistory };
+window.__qr = { classify, showResult, loadHistory, setupControls, get digitalZoom() { return digitalZoom; } };
 
 startCamera();

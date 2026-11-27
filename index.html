@@ -14,6 +14,14 @@
   <video id="video" playsinline muted autoplay></video>
   <div class="frame" aria-hidden="true"><span></span></div>
   <p id="status" class="status">カメラを起動しています…</p>
+  <button id="torch" class="round torch" hidden aria-pressed="false" aria-label="ライト">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 2h8l-1.5 6H9.5z M9.5 8h5v4l-1.5 2v8h-2v-8l-1.5-2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+    <span>ライト</span>
+  </button>
+  <div id="zoomBox" class="zoom" hidden>
+    <span id="zoomLabel" class="zoom-label">1.0x</span>
+    <input id="zoom" type="range" min="1" max="4" step="0.1" value="1" aria-label="ズーム">
+  </div>
   <div class="bar">
     <label class="btn" for="file">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4z M4 15l4-4 4 4 3-3 5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="15.5" cy="9" r="1.5" fill="currentColor"/></svg>
