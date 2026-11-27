@@ -10,29 +10,74 @@ if ('BarcodeDetector' in window) {
 }
 
 // ---------- 読み取り ----------
-async function decodeSource(src, w, h) {
-  if (detector) {
-    try {
-      const codes = await detector.detect(src);
-      if (codes.length) return codes[0].rawValue;
-    } catch (e) { /* jsQRで再試行 */ }
-  }
-  if (!w || !h) return null;
-  const scale = Math.min(1, 1000 / Math.max(w, h));
-  canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
-  ctx.drawImage(src, 0, 0, canvas.width, canvas.height);
+let frameNo = 0;
+
+// jsQRで、画像のうち (sx,sy,sw,sh) の範囲を最大 maxSide px に縮めて解析する
+function jsqrRegion(src, sx, sy, sw, sh, maxSide) {
+  const scale = Math.min(1, maxSide / Math.max(sw, sh));
+  canvas.width = Math.max(1, Math.round(sw * scale)); canvas.height = Math.max(1, Math.round(sh * scale));
+  ctx.drawImage(src, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
   const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const code = jsQR(img.data, img.width, img.height, { inversionAttempts: 'attemptBoth' });
   return code ? code.data : null;
+}
+
+async function decodeSource(src, w, h, isVideo) {
+  if (detector) {
+    try {
+      const codes = await detector.detect(src);
+      if (codes.length && codes[0].rawValue) return codes[0].rawValue;
+    } catch (e) { /* jsQRで再試行 */ }
+  }
+  if (!w || !h) return null;
+  if (isVideo) {
+    // 毎フレーム：枠のあたり（中央の正方形）を拡大気味に解析。数フレームに1回は全体も見る
+    frameNo++;
+    const side = Math.min(w, h) * 0.8;
+    const r = jsqrRegion(src, (w - side) / 2, (h - side) / 2, side, side, 720);
+    if (r || frameNo % 4) return r;
+    return jsqrRegion(src, 0, 0, w, h, 1000);
+  }
+  // 画像：全体 → 小さく縮めて再挑戦（高解像度スクショ対策）
+  return jsqrRegion(src, 0, 0, w, h, 1600) || jsqrRegion(src, 0, 0, w, h, 800);
+}
+
+// メインの背面カメラを選ぶ（超広角などピントの合わないレンズを避ける）
+async function pickBackCamera() {
+  try {
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+    const back = devs.filter((d) => /back|rear|environment|背面/i.test(d.label));
+    if (back.length > 1) {
+      const main = back.find((d) => /\b0\b/.test(d.label)) || back[0];
+      return main.deviceId;
+    }
+  } catch (e) {}
+  return null;
+}
+
+async function openStream(deviceId) {
+  const base = { width: { ideal: 1920 }, height: { ideal: 1080 } };
+  const video = deviceId ? { ...base, deviceId: { exact: deviceId } } : { ...base, facingMode: { ideal: 'environment' } };
+  return navigator.mediaDevices.getUserMedia({ video, audio: false });
 }
 
 async function startCamera() {
   $('retry').hidden = true;
   setStatus('カメラを起動しています…');
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false
-    });
+    stream = await openStream(null);
+    // 許可が出た後ならカメラ名が見えるので、メインの背面カメラに切り替える
+    const id = await pickBackCamera();
+    const cur = stream.getVideoTracks()[0];
+    if (id && cur.getSettings().deviceId !== id) {
+      stream.getTracks().forEach((t) => t.stop());
+      try { stream = await openStream(id); } catch (e) { stream = await openStream(null); }
+    }
+    const track = stream.getVideoTracks()[0];
+    try {
+      const caps = track.getCapabilities ? track.getCapabilities() : {};
+      if (caps.focusMode && caps.focusMode.includes('continuous')) await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+    } catch (e) {}
     video.srcObject = stream;
     await video.play();
     setStatus('QRコードを枠に合わせてください');
@@ -55,10 +100,10 @@ function stopCamera() {
 async function loop() {
   if (!scanning) return;
   if (video.readyState >= 2) {
-    const text = await decodeSource(video, video.videoWidth, video.videoHeight);
+    const text = await decodeSource(video, video.videoWidth, video.videoHeight, true);
     if (text && scanning) { if (navigator.vibrate) navigator.vibrate(60); stopCamera(); showResult(text); return; }
   }
-  setTimeout(() => requestAnimationFrame(loop), 120);
+  setTimeout(() => requestAnimationFrame(loop), 80);
 }
 
 $('file').addEventListener('change', async (e) => {
