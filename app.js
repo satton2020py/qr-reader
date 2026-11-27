@@ -5,20 +5,26 @@ const $ = (id) => document.getElementById(id);
 const video = $('video'), canvas = $('canvas'), ctx = canvas.getContext('2d', { willReadFrequently: true });
 let stream = null, scanning = false, detector = null;
 
-if ('BarcodeDetector' in window) {
-  try { detector = new BarcodeDetector({ formats: ['qr_code'] }); } catch (e) { detector = null; }
-}
+// 端末内蔵のQR解析（Android Chromeなら高速）。使えるか確かめてから使う
+const detectorReady = (async () => {
+  if (!('BarcodeDetector' in window)) return;
+  try {
+    const formats = await BarcodeDetector.getSupportedFormats();
+    if (formats.includes('qr_code')) detector = new BarcodeDetector({ formats: ['qr_code'] });
+  } catch (e) { detector = null; }
+})();
+let detectorFails = 0;
 
 // ---------- 読み取り ----------
 let frameNo = 0;
 
 // jsQRで、画像のうち (sx,sy,sw,sh) の範囲を最大 maxSide px に縮めて解析する
-function jsqrRegion(src, sx, sy, sw, sh, maxSide) {
+function jsqrRegion(src, sx, sy, sw, sh, maxSide, inversion = 'attemptBoth') {
   const scale = Math.min(1, maxSide / Math.max(sw, sh));
   canvas.width = Math.max(1, Math.round(sw * scale)); canvas.height = Math.max(1, Math.round(sh * scale));
   ctx.drawImage(src, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
   const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const code = jsQR(img.data, img.width, img.height, { inversionAttempts: 'attemptBoth' });
+  const code = jsQR(img.data, img.width, img.height, { inversionAttempts: inversion });
   return code ? code.data : null;
 }
 
@@ -26,17 +32,21 @@ async function decodeSource(src, w, h, isVideo) {
   if (detector) {
     try {
       const codes = await detector.detect(src);
+      detectorFails = 0;
       if (codes.length && codes[0].rawValue) return codes[0].rawValue;
-    } catch (e) { /* jsQRで再試行 */ }
+      // カメラ映像では内蔵解析だけを使う（jsQRを重ねると遅くなるため）
+      if (isVideo) return null;
+    } catch (e) {
+      // 何度も失敗するなら内蔵解析をあきらめてjsQRに切り替える
+      if (++detectorFails > 5) detector = null;
+    }
   }
   if (!w || !h) return null;
   if (isVideo) {
-    // 毎フレーム：枠のあたり（中央の正方形）を拡大気味に解析。数フレームに1回は全体も見る
+    // jsQR：枠のあたり（中央の正方形）を小さめに解析して軽くする。白黒反転は時々だけ試す
     frameNo++;
-    const side = Math.min(w, h) * 0.8;
-    const r = jsqrRegion(src, (w - side) / 2, (h - side) / 2, side, side, 720);
-    if (r || frameNo % 4) return r;
-    return jsqrRegion(src, 0, 0, w, h, 1000);
+    const side = Math.min(w, h) * 0.75;
+    return jsqrRegion(src, (w - side) / 2, (h - side) / 2, side, side, 480, frameNo % 6 ? 'dontInvert' : 'onlyInvert');
   }
   // 画像：全体 → 小さく縮めて再挑戦（高解像度スクショ対策）
   return jsqrRegion(src, 0, 0, w, h, 1600) || jsqrRegion(src, 0, 0, w, h, 800);
@@ -80,6 +90,7 @@ async function startCamera() {
     } catch (e) {}
     video.srcObject = stream;
     await video.play();
+    await detectorReady;
     setStatus('QRコードを枠に合わせてください');
     scanning = true;
     loop();
@@ -103,7 +114,8 @@ async function loop() {
     const text = await decodeSource(video, video.videoWidth, video.videoHeight, true);
     if (text && scanning) { if (navigator.vibrate) navigator.vibrate(60); stopCamera(); showResult(text); return; }
   }
-  setTimeout(() => requestAnimationFrame(loop), 80);
+  // 内蔵解析なら毎フレーム、jsQRなら少し間を空けて画面の動きを保つ
+  if (detector) requestAnimationFrame(loop); else setTimeout(() => requestAnimationFrame(loop), 30);
 }
 
 $('file').addEventListener('change', async (e) => {
