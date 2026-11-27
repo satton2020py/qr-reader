@@ -1,12 +1,22 @@
 {
+  "id": "./",
   "name": "QRリーダー",
   "short_name": "QRリーダー",
+  "description": "開くとすぐ読み取れる、シンプルなQRコードリーダー。URL・Wi-Fi・連絡先などを自動で判別し、履歴は端末内だけに保存します。",
+  "lang": "ja",
+  "dir": "ltr",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
+  "orientation": "portrait",
   "background_color": "#111418",
   "theme_color": "#111418",
+  "categories": ["utilities", "productivity"],
   "icons": [
-    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
   ]
 }
